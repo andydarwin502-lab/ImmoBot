@@ -19,13 +19,11 @@ profils:
     actif: true
 
     # --- Filtres DURS (éliminatoires, vérifiés AVANT l'IA) ---
-    budget_max: 1200        # loyer max charges comprises, en euros
+    budget_max: 850        # loyer max charges comprises, en euros
     budget_min: 0
-    surface_min: 30         # surface minimale en m²
+    surface_min: 40         # surface minimale en m²
     pieces_min: 2           # nombre de pièces minimum
-    villes:                 # au moins un de ces mots doit apparaître dans l'annonce
-      - "Lyon"
-      - "Villeurbanne"
+    villes:                  # au moins un de ces mots doit apparaître dans l'annonce
 
     # --- Wishlist en langage NATUREL ---
     # Écris ici, en français normal, ce que tu aimes et ce que tu fuis.
@@ -33,12 +31,12 @@ profils:
     # Sois précis : plus tu détailles, meilleur est le tri.
     wishlist: |
       Je cherche un logement lumineux et calme, idéalement PAS en rez-de-chaussée.
-      J'aime : de vraies photos (pas des plans 3D ou des images génériques),
-      proche des transports (métro/tram/bus), un balcon ou un extérieur est un vrai plus,
-      une cuisine équipée, un immeuble bien entretenu.
-      Je fuis : logements sombres, sur une rue passante et bruyante, un vis-à-vis direct,
-      un DPE F ou G (passoire thermique), un meublé défraîchi.
-      Gros bonus : proche d'un parc, lumineux plein sud.
+      J'aime : les biens avec des photos, plutôt moderne et qui ont une salle d'eau moderne.
+      Un balcon ou un extérieur est un vrai plus,
+      Une cuisine équipée sauf d'un frigo, un immeuble bien entretenu.
+      Je fuis : logements sombres, un vis-à-vis direct,
+      un DPE F ou G (passoire thermique),
+      Gros bonus : à moins de 20min de Disneyland Paris.
 
   # ---------------- RECHERCHE ACHAT ----------------
   # Mise sur "actif: false" par défaut. Passe-la à "true" quand tu veux.
