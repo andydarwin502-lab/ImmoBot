@@ -1,0 +1,61 @@
+# ==================================================================
+#  TES CRITÈRES DE RECHERCHE
+#  C'est LE seul fichier que tu as besoin de modifier pour régler
+#  ce que le bot doit te remonter. Tout est expliqué en français.
+#  (Les "#" sont des commentaires : ils n'ont aucun effet.)
+# ==================================================================
+
+# Note minimale (sur 100) pour qu'une annonce te soit envoyée.
+# 70 = assez sélectif. Baisse à 60 si tu reçois trop peu de choses,
+# monte à 80 si tu reçois trop de trucs moyens.
+seuil_note: 70
+
+# Tu peux avoir DEUX recherches en même temps : "location" et "achat".
+# Mets "actif: false" sur celle que tu ne veux pas utiliser.
+profils:
+
+  # ---------------- RECHERCHE LOCATION ----------------
+  location:
+    actif: true
+
+    # --- Filtres DURS (éliminatoires, vérifiés AVANT l'IA) ---
+    budget_max: 1200        # loyer max charges comprises, en euros
+    budget_min: 0
+    surface_min: 30         # surface minimale en m²
+    pieces_min: 2           # nombre de pièces minimum
+    villes:                 # au moins un de ces mots doit apparaître dans l'annonce
+      - "Lyon"
+      - "Villeurbanne"
+
+    # --- Wishlist en langage NATUREL ---
+    # Écris ici, en français normal, ce que tu aimes et ce que tu fuis.
+    # C'est CE texte que l'IA utilise pour noter finement chaque annonce.
+    # Sois précis : plus tu détailles, meilleur est le tri.
+    wishlist: |
+      Je cherche un logement lumineux et calme, idéalement PAS en rez-de-chaussée.
+      J'aime : de vraies photos (pas des plans 3D ou des images génériques),
+      proche des transports (métro/tram/bus), un balcon ou un extérieur est un vrai plus,
+      une cuisine équipée, un immeuble bien entretenu.
+      Je fuis : logements sombres, sur une rue passante et bruyante, un vis-à-vis direct,
+      un DPE F ou G (passoire thermique), un meublé défraîchi.
+      Gros bonus : proche d'un parc, lumineux plein sud.
+
+  # ---------------- RECHERCHE ACHAT ----------------
+  # Mise sur "actif: false" par défaut. Passe-la à "true" quand tu veux.
+  achat:
+    actif: false
+
+    budget_max: 300000      # prix d'achat max, en euros
+    budget_min: 0
+    surface_min: 45
+    pieces_min: 3
+    villes:
+      - "Lyon"
+
+    wishlist: |
+      Je cherche un bien avec du potentiel, lumineux, calme, sans gros travaux de structure.
+      J'aime : un extérieur (balcon, terrasse, jardin), une bonne exposition,
+      un étage élevé avec ascenseur, un quartier vivant et bien desservi.
+      Je fuis : rez-de-chaussée sur rue, DPE F ou G, charges de copropriété très élevées,
+      un bien au prix au m² nettement au-dessus du marché du quartier.
+      Bonus : cave, place de parking, faible taxe foncière.
