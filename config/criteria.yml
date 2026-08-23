@@ -23,7 +23,28 @@ profils:
     budget_min: 0
     surface_min: 40         # surface minimale en m²
     pieces_min: 2           # nombre de pièces minimum
-    villes:                  # au moins un de ces mots doit apparaître dans l'annonce
+    villes:
+      # --- Zone ~15 min de Disneyland Paris (Chessy) ---
+      # Les CODES POSTAUX sont les plus fiables (presque toujours présents dans l'annonce) :
+      - "77700"   # Val d'Europe : Chessy, Serris, Bailly-Romainvilliers, Magny-le-Hongre, Coupvray
+      - "77600"   # Bussy-Saint-Georges et alentours, Chanteloup-en-Brie
+      - "77144"   # Montévrain, Chalifert
+      - "77164"   # Ferrières-en-Brie
+      - "77400"   # Lagny-sur-Marne, Thorigny, Pomponne, Saint-Thibault-des-Vignes
+      - "77450"   # Esbly, Montry, Condé-Sainte-Libiaire
+      - "77090"   # Collégien
+      - "77200"   # Torcy
+      # Noms de communes (secours si le code postal manque dans l'annonce) :
+      - "Val d'Europe"
+      - "Marne-la-Vallée"
+      - "Chessy"
+      - "Serris"
+      - "Montévrain"
+      - "Bussy"
+      - "Lagny"
+      - "Magny-le-Hongre"
+      - "Bailly-Romainvilliers"
+      - "Coupvray"                  # au moins un de ces mots doit apparaître dans l'annonce
 
     # --- Wishlist en langage NATUREL ---
     # Écris ici, en français normal, ce que tu aimes et ce que tu fuis.
