@@ -97,14 +97,18 @@ def fetch_jinka(token: str) -> list:
 
 
 def map_ad(a: dict) -> dict:
-    imgs = a.get("images") or []
-    if isinstance(imgs, list):
+    imgs = a.get("images")
+    if isinstance(imgs, str):                 # Jinka renvoie souvent "url1,url2,..." (une chaîne)
+        imgs = [u.strip() for u in imgs.split(",") if u.strip()]
+    elif isinstance(imgs, list):
         imgs = [i.get("url") if isinstance(i, dict) else i for i in imgs]
+    else:
+        imgs = []
     return {
         "ext_id": str(a.get("id") or a.get("uuid") or a.get("external_id") or a.get("reference") or ""),
         "source": a.get("source"),
         "url": a.get("url") or a.get("link") or a.get("ad_url"),
-        "title": a.get("title") or a.get("name"),
+        "title": a.get("title") or a.get("name") or a.get("type"),
         "rent": _int(a.get("rent") or a.get("price")),
         "area": _int(a.get("area") or a.get("surface")),
         "rooms": _int(a.get("room")),
@@ -117,7 +121,7 @@ def map_ad(a: dict) -> dict:
         "lng": a.get("lng"),
         "dpe": a.get("energy_dpe") or a.get("dpe"),
         "furnished": a.get("furnished"),
-        "images": imgs[:10] if isinstance(imgs, list) else None,
+        "images": imgs[:12] or None,
     }
 
 
