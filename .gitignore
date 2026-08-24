@@ -1,0 +1,12 @@
+# Secrets locaux — NE JAMAIS envoyer sur GitHub
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Divers
+.DS_Store
+*.log

@@ -26,9 +26,10 @@ SYSTEM = (
 
 
 def build_client(api_key: str):
-    """Crée le client Gemini (import tardif : pas besoin de la lib si pas de clé)."""
+    """Crée le client Gemini AVEC un timeout, pour ne jamais rester bloqué si l'API traîne."""
     from google import genai
-    return genai.Client(api_key=api_key)
+    from google.genai import types
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=20000))
 
 
 # Si le modèle demandé n'existe plus (Google renomme parfois), on essaie ceux-ci.
@@ -40,23 +41,36 @@ def _looks_like_model_error(e) -> bool:
     return any(k in msg for k in ("not found", "404", "not supported", "unknown model", "no such model"))
 
 
+def _is_transient(e) -> bool:
+    """Erreur passagère côté Google (surcharge du modèle, coupure) -> ça vaut le coup de réessayer."""
+    msg = str(e).lower()
+    return any(k in msg for k in (
+        "503", "unavailable", "overloaded", "high demand",
+        "500", "internal error", "timeout", "deadline",
+    ))
+
+
 def _generate(client, model: str, prompt: str) -> str:
-    """Appelle Gemini ; en cas de modèle introuvable, tente des modèles de repli."""
+    """Appelle Gemini (timeout via le client). Au plus 3 modèles, 1 essai chacun -> jamais bloqué."""
     from google.genai import types
     cfg = types.GenerateContentConfig(
         system_instruction=SYSTEM,
         response_mime_type="application/json",
         temperature=0.2,
     )
-    candidates = [model] + [m for m in _FALLBACK_MODELS if m != model]
+    candidates = ([model] + [m for m in _FALLBACK_MODELS if m != model])[:3]
     last_err = None
     for m in candidates:
         try:
             return client.models.generate_content(model=m, contents=prompt, config=cfg).text
         except Exception as e:
             last_err = e
-            if not _looks_like_model_error(e):
-                raise            # quota, réseau... : inutile d'essayer d'autres modèles
+            if _is_transient(e):
+                time.sleep(2)                    # courte pause puis on tente un autre modèle
+                continue
+            if _looks_like_model_error(e):
+                continue                         # modèle inconnu -> on tente un autre modèle
+            raise                                # erreur "dure" (clé invalide...) -> inutile d'insister
     raise last_err
 
 
