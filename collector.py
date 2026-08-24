@@ -200,13 +200,20 @@ def score_and_save(sb: "Supabase", rows: list) -> None:
     model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     results = scoremod.score_listings(client, model, listings, profile)
 
-    kept = 0
+    kept, done = 0, 0
     for r, res in zip(rows, results):
+        if not res.get("ia_ok", True):
+            continue  # IA en échec (ex: 503 surcharge) -> on laisse scored=false pour réessayer plus tard
         note = res.get("note")
         sb.save_score(r["ext_id"], note, res.get("raisons") or [], res.get("message_contact") or "")
+        done += 1
         if note is not None and note >= seuil:
             kept += 1
-    print(f"   ✅ {len(rows)} notée(s) ; {kept} au-dessus du seuil ({seuil}).")
+    reste = len(rows) - done
+    msg = f"   ✅ {done}/{len(rows)} notée(s) ; {kept} au-dessus du seuil ({seuil})."
+    if reste:
+        msg += f" ({reste} à réessayer au prochain passage — IA momentanément indispo)"
+    print(msg)
 
 
 # ----------------------------- utilitaires -----------------------------
