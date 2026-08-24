@@ -66,19 +66,26 @@ def score_listings(client, model: str, listings: list, profile: dict) -> list[di
     results: list = [None] * len(listings)
     for start in range(0, len(listings), BATCH_SIZE):
         batch = listings[start:start + BATCH_SIZE]
+        raw = ""
         try:
-            parsed = _parse_json(_generate(client, model, _prompt(profile, batch)))
+            raw = _generate(client, model, _prompt(profile, batch))
+            parsed = _parse_json(raw)
         except Exception as e:  # réseau, quota... on continue sans planter
             print(f"   ⚠️  IA indisponible sur ce lot ({type(e).__name__}: {e}).")
             parsed = []
 
         by_index = {}
-        for obj in parsed:
-            if isinstance(obj, dict) and "index" in obj:
-                try:
-                    by_index[int(obj["index"])] = obj
-                except (ValueError, TypeError):
-                    pass
+        for pos, obj in enumerate(parsed):
+            if not isinstance(obj, dict):
+                continue
+            try:
+                idx = int(obj.get("index"))
+            except (ValueError, TypeError):
+                idx = pos               # pas d'index fourni par l'IA -> on prend la position
+            by_index[idx] = obj
+
+        if not by_index and raw:
+            print(f"   (diag IA) réponse brute : {raw[:400]}")
 
         for i in range(len(batch)):
             obj = by_index.get(i)
