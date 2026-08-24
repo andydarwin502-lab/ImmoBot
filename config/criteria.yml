@@ -44,7 +44,9 @@ profils:
       - "Lagny"
       - "Magny-le-Hongre"
       - "Bailly-Romainvilliers"
-      - "Coupvray"                  # au moins un de ces mots doit apparaître dans l'annonce
+      - "Coupvray"
+      - "Meaux"
+      - "Torcy"
 
     # --- Wishlist en langage NATUREL ---
     # Écris ici, en français normal, ce que tu aimes et ce que tu fuis.
