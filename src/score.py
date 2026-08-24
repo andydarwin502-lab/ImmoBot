@@ -1,22 +1,21 @@
 """
-Notation des annonces par l'IA (Google Gemini, palier gratuit).
+Notation des annonces par l'IA — via GROQ (gratuit, rapide, fiable).
 
-Pour chaque annonce, l'IA renvoie :
-  - note (0-100)     : à quel point ça colle à ta wishlist
-  - garder (bool)    : false si un critère rédhibitoire est clairement violé
-  - raisons (liste)  : 2-3 raisons très courtes
-  - message_contact  : un message prêt à copier-coller (si l'annonce est gardée)
-
-On envoie les annonces PAR LOTS pour économiser le quota gratuit.
-Si l'IA est indisponible (quota, réseau), on NE casse pas le run : l'annonce est
-transmise quand même, marquée "non notée", pour ne pas rater une pépite.
+API compatible OpenAI. Modèle par défaut : llama-3.3-70b-versatile.
+Pour chaque annonce, l'IA renvoie note / garder / raisons / message_contact.
+On envoie par LOTS. Si l'IA échoue, on NE casse pas le run (annonce "non notée",
+elle sera réessayée plus tard).
 """
 
 import json
 import re
 import time
 
+import requests
+
 BATCH_SIZE = 12
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+_FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
 SYSTEM = (
     "Tu es un assistant immobilier EXIGEANT et honnête. "
@@ -26,52 +25,40 @@ SYSTEM = (
 
 
 def build_client(api_key: str):
-    """Crée le client Gemini AVEC un timeout, pour ne jamais rester bloqué si l'API traîne."""
-    from google import genai
-    from google.genai import types
-    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=20000))
+    """Crée une session HTTP authentifiée pour Groq."""
+    s = requests.Session()
+    s.headers.update({"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
+    return s
 
 
-# Si le modèle demandé n'existe plus (Google renomme parfois), on essaie ceux-ci.
-_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest", "gemini-1.5-flash"]
-
-
-def _looks_like_model_error(e) -> bool:
-    msg = str(e).lower()
-    return any(k in msg for k in ("not found", "404", "not supported", "unknown model", "no such model"))
-
-
-def _is_transient(e) -> bool:
-    """Erreur passagère côté Google (surcharge du modèle, coupure) -> ça vaut le coup de réessayer."""
-    msg = str(e).lower()
-    return any(k in msg for k in (
-        "503", "unavailable", "overloaded", "high demand",
-        "500", "internal error", "timeout", "deadline",
-    ))
-
-
-def _generate(client, model: str, prompt: str) -> str:
-    """Appelle Gemini (timeout via le client). Au plus 3 modèles, 1 essai chacun -> jamais bloqué."""
-    from google.genai import types
-    cfg = types.GenerateContentConfig(
-        system_instruction=SYSTEM,
-        response_mime_type="application/json",
-        temperature=0.2,
-    )
-    candidates = ([model] + [m for m in _FALLBACK_MODELS if m != model])[:3]
+def _generate(session, model: str, prompt: str) -> str:
+    """Appelle Groq (avec repli de modèle + petite relance). Jamais bloquant."""
+    candidates = [model] + [m for m in _FALLBACK_MODELS if m != model]
     last_err = None
     for m in candidates:
-        try:
-            return client.models.generate_content(model=m, contents=prompt, config=cfg).text
-        except Exception as e:
-            last_err = e
-            if _is_transient(e):
-                time.sleep(2)                    # courte pause puis on tente un autre modèle
-                continue
-            if _looks_like_model_error(e):
-                continue                         # modèle inconnu -> on tente un autre modèle
-            raise                                # erreur "dure" (clé invalide...) -> inutile d'insister
-    raise last_err
+        for attempt in range(2):
+            try:
+                payload = {
+                    "model": m,
+                    "temperature": 0.2,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM},
+                        {"role": "user", "content": prompt},
+                    ],
+                }
+                r = session.post(GROQ_URL, data=json.dumps(payload), timeout=60)
+                if r.status_code == 429 or r.status_code >= 500:
+                    last_err = RuntimeError(f"Groq {r.status_code}: {r.text[:150]}")
+                    time.sleep(2)
+                    continue
+                if r.status_code >= 400:
+                    raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
+                return r.json()["choices"][0]["message"]["content"]
+            except requests.RequestException as e:
+                last_err = e
+                time.sleep(2)
+        # modèle suivant
+    raise last_err or RuntimeError("Groq indisponible")
 
 
 def score_listings(client, model: str, listings: list, profile: dict) -> list[dict]:
@@ -81,7 +68,7 @@ def score_listings(client, model: str, listings: list, profile: dict) -> list[di
         batch = listings[start:start + BATCH_SIZE]
         try:
             parsed = _parse_json(_generate(client, model, _prompt(profile, batch)))
-        except Exception as e:  # quota, réseau, modèle... on continue sans planter
+        except Exception as e:  # réseau, quota... on continue sans planter
             print(f"   ⚠️  IA indisponible sur ce lot ({type(e).__name__}: {e}).")
             parsed = []
 
@@ -98,7 +85,7 @@ def score_listings(client, model: str, listings: list, profile: dict) -> list[di
             if obj is None:
                 results[start + i] = {
                     "ia_ok": False, "note": None, "garder": True,
-                    "raisons": ["(non évaluée par l'IA — quota ou erreur)"],
+                    "raisons": ["(non évaluée par l'IA — à réessayer)"],
                     "message_contact": "",
                 }
             else:
@@ -109,7 +96,7 @@ def score_listings(client, model: str, listings: list, profile: dict) -> list[di
                     "raisons": _as_list(obj.get("raisons")),
                     "message_contact": (obj.get("message_contact") or "").strip(),
                 }
-        time.sleep(1)  # petite pause pour rester tranquille avec le quota gratuit
+        time.sleep(0.5)
     return results
 
 
@@ -135,12 +122,12 @@ def _prompt(profile: dict, batch: list) -> str:
         "Repères chiffrés : "
         f"budget_max={profile.get('budget_max')}, surface_min={profile.get('surface_min')}, "
         f"pieces_min={profile.get('pieces_min')}, villes={profile.get('villes')}\n\n"
-        "Annonces à évaluer (données parfois incomplètes, extraites d'e-mails) :\n"
+        "Annonces à évaluer (données parfois incomplètes) :\n"
         f"{json.dumps(items, ensure_ascii=False)}\n\n"
         "Pour CHAQUE annonce, renvoie un objet avec EXACTEMENT ces clés :\n"
         '  "index" (entier, celui de l\'annonce),\n'
         '  "note" (entier 0-100 : à quel point ça colle à la wishlist),\n'
-        '  "garder" (true/false : false si un critère rédhibitoire de la wishlist est clairement violé),\n'
+        '  "garder" (true/false : false si un critère rédhibitoire est clairement violé),\n'
         '  "raisons" (2 à 3 raisons TRÈS courtes, en français),\n'
         '  "message_contact" (message court, poli, personnalisé, en français, pour demander une visite ; '
         'chaîne vide "" si garder vaut false).\n'
@@ -163,6 +150,11 @@ def _parse_json(text: str):
             data = json.loads(m.group(0))
         except json.JSONDecodeError:
             return []
+    if isinstance(data, dict):
+        for k in ("results", "annonces", "data", "items"):
+            if isinstance(data.get(k), list):
+                return data[k]
+        return [data]
     return data if isinstance(data, list) else [data]
 
 

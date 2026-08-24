@@ -148,7 +148,7 @@ class Supabase:
     def get_unscored(self, limit: int = 40) -> list:
         cols = "ext_id,source,title,rent,area,rooms,bedrooms,city,quartier,dpe,url"
         r = requests.get(
-            f"{self.base}/listings?scored=is.false&select={cols}&limit={limit}",
+            f"{self.base}/listings?note=is.null&select={cols}&limit={limit}",
             headers=self.h, timeout=30,
         )
         if r.status_code >= 300:
@@ -188,16 +188,14 @@ def score_and_save(sb: "Supabase", rows: list) -> None:
                 f"{r.get('area') or '?'} m², {r.get('rent') or '?'}€, DPE {r.get('dpe') or '?'}"),
     ) for r in rows]
 
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        print("   ⚠️ Pas de clé Gemini — annonces enregistrées sans note.")
-        for r in rows:
-            sb.save_score(r["ext_id"], None, ["(pas de clé IA)"], "")
+        print("   ⚠️ Pas de clé Groq (secret GROQ_API_KEY) — notes reportées au prochain passage.")
         return
 
     from src import score as scoremod
     client = scoremod.build_client(api_key)
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     results = scoremod.score_listings(client, model, listings, profile)
 
     kept, done = 0, 0
