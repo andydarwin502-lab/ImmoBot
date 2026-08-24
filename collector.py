@@ -199,7 +199,7 @@ def score_and_save(sb: "Supabase", rows: list) -> None:
 
     from src import score as scoremod
     client = scoremod.build_client(api_key)
-    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
     results = scoremod.score_listings(client, model, listings, profile)
 
     kept, done = 0, 0

@@ -15,7 +15,10 @@ import requests
 
 BATCH_SIZE = 12
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-_FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+_FALLBACK_MODELS = [
+    "llama-3.1-8b-instant", "llama-3.3-70b-versatile", "gemma2-9b-it",
+    "llama3-70b-8192", "llama3-8b-8192",
+]
 
 SYSTEM = (
     "Tu es un assistant immobilier EXIGEANT et honnête. "
@@ -32,32 +35,41 @@ def build_client(api_key: str):
 
 
 def _generate(session, model: str, prompt: str) -> str:
-    """Appelle Groq (avec repli de modèle + petite relance). Jamais bloquant."""
+    """Appelle Groq ; essaie plusieurs modèles ; jamais bloquant. Diagnostique si tout échoue."""
     candidates = [model] + [m for m in _FALLBACK_MODELS if m != model]
     last_err = None
     for m in candidates:
-        for attempt in range(2):
-            try:
-                payload = {
-                    "model": m,
-                    "temperature": 0.2,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": prompt},
-                    ],
-                }
-                r = session.post(GROQ_URL, data=json.dumps(payload), timeout=60)
-                if r.status_code == 429 or r.status_code >= 500:
-                    last_err = RuntimeError(f"Groq {r.status_code}: {r.text[:150]}")
-                    time.sleep(2)
-                    continue
-                if r.status_code >= 400:
-                    raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
-                return r.json()["choices"][0]["message"]["content"]
-            except requests.RequestException as e:
-                last_err = e
+        try:
+            payload = {
+                "model": m,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+            }
+            r = session.post(GROQ_URL, data=json.dumps(payload), timeout=60)
+            if r.status_code == 429 or r.status_code >= 500:      # surcharge -> modèle suivant
+                last_err = RuntimeError(f"Groq {r.status_code}")
                 time.sleep(2)
-        # modèle suivant
+                continue
+            if r.status_code == 404 or "model_not_found" in r.text or "does not exist" in r.text:
+                last_err = RuntimeError(f"modèle '{m}' indispo")
+                continue                                           # modèle inconnu -> suivant
+            if r.status_code >= 400:                               # erreur dure (clé invalide...)
+                raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
+            return r.json()["choices"][0]["message"]["content"]
+        except requests.RequestException as e:
+            last_err = e
+            time.sleep(2)
+
+    # Tout a échoué : on liste les modèles réellement disponibles (diagnostic).
+    try:
+        mr = session.get("https://api.groq.com/openai/v1/models", timeout=15)
+        names = [x.get("id") for x in (mr.json().get("data") or [])]
+        raise RuntimeError(f"aucun modèle Groq n'a marché — modèles dispo : {names}")
+    except requests.RequestException:
+        pass
     raise last_err or RuntimeError("Groq indisponible")
 
 
