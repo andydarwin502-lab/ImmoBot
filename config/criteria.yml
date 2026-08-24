@@ -51,13 +51,13 @@ profils:
     # C'est CE texte que l'IA utilise pour noter finement chaque annonce.
     # Sois précis : plus tu détailles, meilleur est le tri.
     wishlist: |
-      Je cherche un logement lumineux et calme, idéalement PAS en rez-de-chaussée.
+      Je cherche un logement idéalement PAS en rez-de-chaussée.
       J'aime : les biens avec des photos, plutôt moderne et qui ont une salle d'eau moderne.
       Un balcon ou un extérieur est un vrai plus,
       Une cuisine équipée sauf d'un frigo, un immeuble bien entretenu.
       Je fuis : logements sombres, un vis-à-vis direct,
       un DPE F ou G (passoire thermique),
-      Gros bonus : à moins de 20min de Disneyland Paris.
+      Gros bonus : à moins de 20min de Disneyland Paris et 2 chambres sont un très très gros bonus !
 
   # ---------------- RECHERCHE ACHAT ----------------
   # Mise sur "actif: false" par défaut. Passe-la à "true" quand tu veux.
