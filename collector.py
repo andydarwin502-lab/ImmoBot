@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Collecteur — lit tes annonces Jinka (API) -> les range dans Supabase -> les note avec l'IA.
-Tranche 1 (pas encore de notif push).
+Collecteur — lit tes annonces Jinka -> les range dans Supabase -> calcule le TEMPS DE TRAJET
+en voiture vers ton travail. (Plus de note IA.)
 
-Env / secrets attendus :
-  JINKA_ACCESS_TOKEN, SUPABASE_URL, SUPABASE_KEY (clé secrète),
-  GEMINI_API_KEY (optionnel), GEMINI_MODEL (optionnel)
-Lit aussi config/criteria.yml (wishlist + seuil, pour la note IA).
+Env / secrets : JINKA_ACCESS_TOKEN, SUPABASE_URL, SUPABASE_KEY.
+Le lieu de travail vient de la table `settings` (sinon valeur par défaut : Disneyland Paris).
 """
 
 import json
@@ -14,15 +12,15 @@ import os
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import requests
-import yaml
 
 ROOT = Path(__file__).parent
 JINKA = "https://api.jinka.fr/apiv2"
+OSRM = "https://router.project-osrm.org/route/v1/driving"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+DEFAULT_WORK = (48.8786, 2.7804)  # Disneyland Paris (fallback si pas de settings)
 
 
 def main() -> int:
@@ -39,7 +37,6 @@ def main() -> int:
         print("❌ Il manque JINKA_ACCESS_TOKEN / SUPABASE_URL / SUPABASE_KEY.")
         return 1
 
-    # 1) Récupérer les annonces Jinka
     ads = fetch_jinka(token)
     print(f"🏠 {len(ads)} annonce(s) récupérée(s) depuis Jinka.")
     if not ads:
@@ -49,16 +46,11 @@ def main() -> int:
     rows = _dedup([map_ad(a) for a in ads])
     print(f"🧹 {len(rows)} annonce(s) après dédoublonnage.")
 
-    # 2) Ranger dans Supabase (insère les nouvelles, laisse les notes existantes tranquilles)
     sb = Supabase(sb_url, sb_key)
     touched = sb.upsert_listings(rows)
     print(f"🗄️  {touched} ligne(s) écrite(s) dans la base.")
 
-    # 3) Noter par l'IA les annonces pas encore notées
-    to_score = sb.get_unscored()
-    print(f"🧠 {len(to_score)} annonce(s) à noter…")
-    if to_score:
-        score_and_save(sb, to_score)
+    enrich_travel(sb)
 
     print("✅ Terminé.")
     return 0
@@ -78,7 +70,7 @@ def fetch_jinka(token: str) -> list:
         return []
     alerts = _as_list(ra.json(), ("alerts", "data", "results"))
 
-    ads, diag = [], True
+    ads = []
     for alert in alerts:
         aid = alert.get("id") or alert.get("alert_id")
         if not aid:
@@ -87,11 +79,7 @@ def fetch_jinka(token: str) -> list:
         if rd.status_code >= 400:
             print(f"   ⚠️ alerte {aid} status {rd.status_code}")
             continue
-        chunk = _as_list(rd.json(), ("ads", "results", "data", "matches", "items"))
-        if chunk and diag:                       # une seule fois : structure brute (pour trouver l'URL)
-            print("   (diag) 1re annonce :", json.dumps(chunk[0], ensure_ascii=False)[:900])
-            diag = False
-        ads.extend(chunk)
+        ads.extend(_as_list(rd.json(), ("ads", "results", "data", "matches", "items")))
         time.sleep(0.25)
     return ads
 
@@ -125,6 +113,40 @@ def map_ad(a: dict) -> dict:
     }
 
 
+# ----------------------------- Temps de trajet -----------------------------
+
+def enrich_travel(sb: "Supabase") -> None:
+    wlat, wlng = sb.get_work_coords() or DEFAULT_WORK
+    todo = sb.get_needing_travel()
+    if not todo:
+        print("🚗 Trajets déjà calculés.")
+        return
+    print(f"🚗 {len(todo)} trajet(s) à calculer (vers {wlat:.4f},{wlng:.4f})…")
+    done = 0
+    for r in todo:
+        mins = osrm_minutes(r.get("lat"), r.get("lng"), wlat, wlng)
+        if mins is not None:
+            sb.save_travel(r["ext_id"], mins)
+            done += 1
+        time.sleep(0.25)
+    print(f"   ✅ {done}/{len(todo)} trajet(s) calculé(s).")
+
+
+def osrm_minutes(lat, lng, wlat, wlng):
+    """Temps de trajet voiture (minutes) via le serveur public OSRM. None si indispo."""
+    if lat is None or lng is None:
+        return None
+    try:
+        url = f"{OSRM}/{lng},{lat};{wlng},{wlat}?overview=false"
+        r = requests.get(url, timeout=20)
+        if r.status_code >= 400:
+            return None
+        routes = r.json().get("routes") or []
+        return round(routes[0]["duration"] / 60) if routes else None
+    except Exception:
+        return None
+
+
 # ----------------------------- Supabase -----------------------------
 
 class Supabase:
@@ -149,84 +171,40 @@ class Supabase:
         except Exception:
             return 0
 
-    def get_unscored(self, limit: int = 40) -> list:
-        cols = "ext_id,source,title,rent,area,rooms,bedrooms,city,quartier,dpe,url"
+    def get_needing_travel(self, limit: int = 100) -> list:
         r = requests.get(
-            f"{self.base}/listings?note=is.null&select={cols}&limit={limit}",
+            f"{self.base}/listings?travel_min=is.null&lat=not.is.null&select=ext_id,lat,lng&limit={limit}",
             headers=self.h, timeout=30,
         )
         if r.status_code >= 300:
-            print(f"   ⚠️ get_unscored status {r.status_code}: {r.text[:200]}")
+            print(f"   ⚠️ get_needing_travel status {r.status_code}: {r.text[:200]}")
             return []
         return r.json()
 
-    def save_score(self, ext_id: str, note, reasons, message) -> None:
-        body = {"note": note, "reasons": reasons, "message": message, "scored": True}
+    def save_travel(self, ext_id: str, minutes: int) -> None:
         r = requests.patch(
             f"{self.base}/listings?ext_id=eq.{ext_id}",
             headers={**self.h, "Prefer": "return=minimal"},
-            data=json.dumps(body), timeout=30,
+            data=json.dumps({"travel_min": minutes}), timeout=30,
         )
         if r.status_code >= 300:
-            print(f"   ⚠️ save_score {ext_id} status {r.status_code}")
+            print(f"   ⚠️ save_travel {ext_id} status {r.status_code}")
 
-
-# ----------------------------- Notation IA -----------------------------
-
-def score_and_save(sb: "Supabase", rows: list) -> None:
-    cfg = _load_criteria()
-    profile = (cfg.get("profils") or {}).get("location") or {}
-    seuil = int(cfg.get("seuil_note", 70))
-
-    listings = [SimpleNamespace(
-        source=r.get("source") or "Jinka",
-        titre=r.get("title") or "",
-        prix=r.get("rent"),
-        surface=r.get("area"),
-        pieces=r.get("rooms"),
-        ville=r.get("city") or r.get("quartier"),
-        dpe=r.get("dpe"),
-        url=r.get("url") or "",
-        resume=(f"{r.get('title') or ''} — {r.get('quartier') or ''} {r.get('city') or ''}, "
-                f"{r.get('rooms') or '?'} pièces, {r.get('bedrooms') or '?'} chambres, "
-                f"{r.get('area') or '?'} m², {r.get('rent') or '?'}€, DPE {r.get('dpe') or '?'}"),
-    ) for r in rows]
-
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        print("   ⚠️ Pas de clé Groq (secret GROQ_API_KEY) — notes reportées au prochain passage.")
-        return
-
-    from src import score as scoremod
-    client = scoremod.build_client(api_key)
-    model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-    results = scoremod.score_listings(client, model, listings, profile)
-
-    kept, done = 0, 0
-    for r, res in zip(rows, results):
-        if not res.get("ia_ok", True):
-            continue  # IA en échec (ex: 503 surcharge) -> on laisse scored=false pour réessayer plus tard
-        note = res.get("note")
-        sb.save_score(r["ext_id"], note, res.get("raisons") or [], res.get("message_contact") or "")
-        done += 1
-        if note is not None and note >= seuil:
-            kept += 1
-    reste = len(rows) - done
-    msg = f"   ✅ {done}/{len(rows)} notée(s) ; {kept} au-dessus du seuil ({seuil})."
-    if reste:
-        msg += f" ({reste} à réessayer au prochain passage — IA momentanément indispo)"
-    print(msg)
+    def get_work_coords(self):
+        try:
+            r = requests.get(f"{self.base}/settings?select=work_lat,work_lng&limit=1",
+                             headers=self.h, timeout=20)
+            if r.status_code >= 300:
+                return None
+            rows = r.json()
+            if rows and rows[0].get("work_lat") is not None:
+                return (rows[0]["work_lat"], rows[0]["work_lng"])
+        except Exception:
+            pass
+        return None
 
 
 # ----------------------------- utilitaires -----------------------------
-
-def _load_criteria() -> dict:
-    try:
-        with open(ROOT / "config" / "criteria.yml", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    except Exception:
-        return {}
-
 
 def _as_list(data, keys):
     if isinstance(data, list):

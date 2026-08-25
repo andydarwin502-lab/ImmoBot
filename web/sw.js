@@ -1,5 +1,5 @@
 // Service worker minimal : rend l'app installable + garde la coquille hors-ligne.
-const CACHE = "immo-v1";
+const CACHE = "immo-v3";
 const ASSETS = ["./", "./index.html", "./style.css", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (e) => {
