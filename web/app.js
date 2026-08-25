@@ -10,6 +10,7 @@ let cache = [];
 let settings = {};
 let gal = { imgs: [], i: 0 };
 let sortBy = "travel";
+let map, marker, workPick = null;
 
 const nlAsc = (x, y) => {                        // tri ascendant, valeurs inconnues à la fin
   if (x == null && y == null) return 0;
@@ -83,7 +84,8 @@ function card(a) {
     .filter(Boolean).join(" · ");
   const fav = a.status === "favori";
   const q = encodeURIComponent(`${a.source || ""} ${a.title || ""} ${a.city || ""} ${a.rent || ""}€ ${a.area || ""}m2`);
-  const search = `https://www.google.com/search?q=${q}`;
+  const link = a.url || `https://www.google.com/search?q=${q}`;
+  const linkLabel = a.url ? "➜ Voir l'annonce" : "🔍 Chercher l'annonce";
   return `
   <article class="card">
     <div class="photo" data-gallery="${a.id}" style="${img ? `background-image:url('${esc(img)}')` : ""}">
@@ -95,7 +97,7 @@ function card(a) {
       <div class="price">${a.rent ? a.rent + " €" : "—"} <span class="meta">${meta ? "· " + meta : ""}</span></div>
       <div class="loc">${esc(a.city || "")}${a.postal_code ? " (" + esc(a.postal_code) + ")" : ""}${a.dpe ? " · DPE " + esc(a.dpe) : ""}</div>
       <div class="actions">
-        <a class="btn" href="${search}" target="_blank" rel="noopener">🔍 Chercher l'annonce</a>
+        <a class="btn" href="${esc(link)}" target="_blank" rel="noopener">${linkLabel}</a>
         <span class="src">${esc(a.source || "")}</span>
       </div>
     </div>
@@ -131,8 +133,43 @@ function navGal(d) { if (gal.imgs.length) { gal.i = (gal.i + d + gal.imgs.length
 function closeGal() { document.getElementById("lb").classList.remove("on"); }
 
 // ------- Critères (réglages) -------
-function openSettings() { fillForm(); document.getElementById("settings").classList.add("on"); }
+function openSettings() {
+  fillForm();
+  document.getElementById("settings").classList.add("on");
+  setTimeout(initMap, 60);
+}
 function closeSettings() { document.getElementById("settings").classList.remove("on"); }
+
+function initMap() {
+  if (typeof L === "undefined") return;
+  const lat = settings.work_lat || 48.8786, lng = settings.work_lng || 2.7804;
+  if (!map) {
+    map = L.map("map").setView([lat, lng], 12);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(map);
+    marker = L.marker([lat, lng], { draggable: true }).addTo(map);
+    marker.on("dragend", () => pickAt(marker.getLatLng()));
+    map.on("click", (e) => { marker.setLatLng(e.latlng); pickAt(e.latlng); });
+  } else {
+    map.setView([lat, lng], 12);
+    marker.setLatLng([lat, lng]);
+  }
+  workPick = null;
+  setTimeout(() => map.invalidateSize(), 80);
+}
+
+async function pickAt(latlng) {
+  workPick = { lat: latlng.lat, lng: latlng.lng };
+  const label = await reverseGeocode(latlng.lat, latlng.lng);
+  if (label) setVal("s-work", label);
+}
+
+async function reverseGeocode(lat, lng) {
+  try {
+    const r = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lat=${lat}&lon=${lng}`);
+    const j = await r.json();
+    return (j.features && j.features[0]) ? j.features[0].properties.label : null;
+  } catch (e) { return null; }
+}
 
 function fillForm() {
   setVal("s-work", settings.work_label || "");
@@ -152,16 +189,23 @@ async function saveSettings() {
     updated_at: new Date().toISOString(),
   };
   try {
-    if (addr && addr !== (settings.work_label || "")) {
+    let coords = null, label = null;
+    if (workPick) {                                   // point posé sur la carte = prioritaire
+      coords = workPick; label = addr || null;
+    } else if (addr && addr !== (settings.work_label || "")) {
       const g = await geocode(addr);
-      if (!g) { alert("Adresse introuvable — réessaie (ex : « Chessy 77700 » ou une adresse précise)."); return; }
-      patch.work_lat = g.lat; patch.work_lng = g.lng; patch.work_label = g.label;
-      // on remet les trajets à zéro pour qu'ils soient recalculés au prochain passage du collecteur
+      if (!g) { alert("Adresse introuvable — réessaie, ou place le point sur la carte."); return; }
+      coords = { lat: g.lat, lng: g.lng }; label = g.label;
+    }
+    if (coords) {
+      patch.work_lat = coords.lat; patch.work_lng = coords.lng; patch.work_label = label;
+      // on remet les trajets à zéro pour qu'ils soient recalculés au prochain passage
       await fetch(`${REST}?id=gt.0`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify({ travel_min: null }) });
       cache.forEach(x => x.travel_min = null);
     }
     await fetch(`${SETTINGS}?id=eq.1`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify(patch) });
     Object.assign(settings, patch);
+    workPick = null;
     closeSettings();
     render();
   } catch (e) {

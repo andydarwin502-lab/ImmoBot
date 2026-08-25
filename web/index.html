@@ -11,6 +11,8 @@
   <link rel="apple-touch-icon" href="icon.svg">
   <link rel="icon" href="icon.svg">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
   <header class="top">
@@ -40,6 +42,8 @@
       <label>🧭 Lieu de travail (adresse)
         <input id="s-work" type="text" placeholder="ex : Chessy 77700, ou une adresse précise">
       </label>
+      <div id="map"></div>
+      <p class="hint">📍 Tape une adresse, OU place / déplace le point sur la carte.</p>
       <label>💰 Budget max (€)
         <input id="s-budget" type="number" inputmode="numeric" placeholder="ex : 900">
       </label>

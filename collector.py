@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Collecteur — lit tes annonces Jinka -> les range dans Supabase -> calcule le TEMPS DE TRAJET
-en voiture vers ton travail. (Plus de note IA.)
+Collecteur — lit tes annonces Jinka -> Supabase -> temps de trajet (voiture) + lien direct.
+(Pas de note IA.)
 
 Env / secrets : JINKA_ACCESS_TOKEN, SUPABASE_URL, SUPABASE_KEY.
-Le lieu de travail vient de la table `settings` (sinon valeur par défaut : Disneyland Paris).
+Lieu de travail : table `settings` (sinon Disneyland Paris par défaut).
 """
 
 import json
@@ -20,7 +20,7 @@ JINKA = "https://api.jinka.fr/apiv2"
 OSRM = "https://router.project-osrm.org/route/v1/driving"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-DEFAULT_WORK = (48.8786, 2.7804)  # Disneyland Paris (fallback si pas de settings)
+DEFAULT_WORK = (48.8786, 2.7804)
 
 
 def main() -> int:
@@ -37,20 +37,21 @@ def main() -> int:
         print("❌ Il manque JINKA_ACCESS_TOKEN / SUPABASE_URL / SUPABASE_KEY.")
         return 1
 
-    ads = fetch_jinka(token)
+    session, ads = fetch_jinka(token)
     print(f"🏠 {len(ads)} annonce(s) récupérée(s) depuis Jinka.")
     if not ads:
         print("✅ Rien à faire.")
         return 0
 
     rows = _dedup([map_ad(a) for a in ads])
+    id2alert = {str(a.get("id") or a.get("uuid") or ""): a.get("_alert_id") for a in ads}
     print(f"🧹 {len(rows)} annonce(s) après dédoublonnage.")
 
     sb = Supabase(sb_url, sb_key)
-    touched = sb.upsert_listings(rows)
-    print(f"🗄️  {touched} ligne(s) écrite(s) dans la base.")
+    print(f"🗄️  {sb.upsert_listings(rows)} ligne(s) écrite(s) dans la base.")
 
     enrich_travel(sb)
+    enrich_urls(sb, session, id2alert)
 
     print("✅ Terminé.")
     return 0
@@ -58,7 +59,7 @@ def main() -> int:
 
 # ----------------------------- Jinka -----------------------------
 
-def fetch_jinka(token: str) -> list:
+def fetch_jinka(token: str):
     s = requests.Session()
     s.headers.update({
         "User-Agent": UA, "Accept": "application/json",
@@ -67,7 +68,7 @@ def fetch_jinka(token: str) -> list:
     ra = s.get(f"{JINKA}/alert", timeout=25)
     if ra.status_code >= 400:
         print(f"   ⚠️ /alert status {ra.status_code} — token expiré ? {ra.text[:200]}")
-        return []
+        return s, []
     alerts = _as_list(ra.json(), ("alerts", "data", "results"))
 
     ads = []
@@ -79,14 +80,18 @@ def fetch_jinka(token: str) -> list:
         if rd.status_code >= 400:
             print(f"   ⚠️ alerte {aid} status {rd.status_code}")
             continue
-        ads.extend(_as_list(rd.json(), ("ads", "results", "data", "matches", "items")))
+        chunk = _as_list(rd.json(), ("ads", "results", "data", "matches", "items"))
+        for ad in chunk:
+            if isinstance(ad, dict):
+                ad["_alert_id"] = aid
+        ads.extend(chunk)
         time.sleep(0.25)
-    return ads
+    return s, ads
 
 
 def map_ad(a: dict) -> dict:
     imgs = a.get("images")
-    if isinstance(imgs, str):                 # Jinka renvoie souvent "url1,url2,..." (une chaîne)
+    if isinstance(imgs, str):
         imgs = [u.strip() for u in imgs.split(",") if u.strip()]
     elif isinstance(imgs, list):
         imgs = [i.get("url") if isinstance(i, dict) else i for i in imgs]
@@ -113,6 +118,50 @@ def map_ad(a: dict) -> dict:
     }
 
 
+# ----------------------------- Lien direct vers l'annonce -----------------------------
+
+def enrich_urls(sb: "Supabase", session, id2alert: dict) -> None:
+    todo = sb.get_needing_url()
+    if not todo:
+        print("🔗 Liens déjà résolus.")
+        return
+    print(f"🔗 {len(todo)} lien(s) à résoudre…")
+    done, diag = 0, True
+    for r in todo:
+        aid = id2alert.get(r["ext_id"])
+        if not aid:
+            continue
+        url = resolve_url(session, aid, r["ext_id"], diag)
+        diag = False
+        if url:
+            sb.save_url(r["ext_id"], url)
+            done += 1
+        time.sleep(0.25)
+    print(f"   ✅ {done}/{len(todo)} lien(s) trouvé(s).")
+
+
+def resolve_url(session, alert_id, ad_id, diag=False):
+    """Va chercher l'URL réelle de l'annonce via le détail Jinka."""
+    try:
+        r = session.get(f"{JINKA}/alert/{alert_id}/ad/{ad_id}", timeout=15)
+        if r.status_code >= 400:
+            if diag:
+                print(f"   (diag lien) /ad status {r.status_code} : {r.text[:200]}")
+            return None
+        d = r.json()
+        if diag:
+            print(f"   (diag lien) détail annonce : {json.dumps(d, ensure_ascii=False)[:900]}")
+        for k in ("url", "ad_url", "source_url", "link", "redirect", "redirect_url", "webUrl", "original_url"):
+            v = _dig(d, k)
+            if isinstance(v, str) and v.startswith("http") and "jinka" not in v:
+                return v
+        return None
+    except Exception as e:
+        if diag:
+            print(f"   (diag lien) erreur : {e}")
+        return None
+
+
 # ----------------------------- Temps de trajet -----------------------------
 
 def enrich_travel(sb: "Supabase") -> None:
@@ -128,17 +177,15 @@ def enrich_travel(sb: "Supabase") -> None:
         if mins is not None:
             sb.save_travel(r["ext_id"], mins)
             done += 1
-        time.sleep(0.25)
+        time.sleep(0.2)
     print(f"   ✅ {done}/{len(todo)} trajet(s) calculé(s).")
 
 
 def osrm_minutes(lat, lng, wlat, wlng):
-    """Temps de trajet voiture (minutes) via le serveur public OSRM. None si indispo."""
     if lat is None or lng is None:
         return None
     try:
-        url = f"{OSRM}/{lng},{lat};{wlng},{wlat}?overview=false"
-        r = requests.get(url, timeout=20)
+        r = requests.get(f"{OSRM}/{lng},{lat};{wlng},{wlat}?overview=false", timeout=20)
         if r.status_code >= 400:
             return None
         routes = r.json().get("routes") or []
@@ -171,32 +218,30 @@ class Supabase:
         except Exception:
             return 0
 
-    def get_needing_travel(self, limit: int = 100) -> list:
-        r = requests.get(
-            f"{self.base}/listings?travel_min=is.null&lat=not.is.null&select=ext_id,lat,lng&limit={limit}",
-            headers=self.h, timeout=30,
-        )
-        if r.status_code >= 300:
-            print(f"   ⚠️ get_needing_travel status {r.status_code}: {r.text[:200]}")
-            return []
-        return r.json()
+    def _get(self, query):
+        r = requests.get(f"{self.base}/{query}", headers=self.h, timeout=30)
+        return r.json() if r.status_code < 300 else []
 
-    def save_travel(self, ext_id: str, minutes: int) -> None:
-        r = requests.patch(
-            f"{self.base}/listings?ext_id=eq.{ext_id}",
-            headers={**self.h, "Prefer": "return=minimal"},
-            data=json.dumps({"travel_min": minutes}), timeout=30,
-        )
-        if r.status_code >= 300:
-            print(f"   ⚠️ save_travel {ext_id} status {r.status_code}")
+    def get_needing_travel(self, limit=100):
+        return self._get(f"listings?travel_min=is.null&lat=not.is.null&select=ext_id,lat,lng&limit={limit}")
+
+    def get_needing_url(self, limit=100):
+        return self._get(f"listings?url=is.null&select=ext_id&limit={limit}")
+
+    def _patch(self, ext_id, body):
+        requests.patch(f"{self.base}/listings?ext_id=eq.{ext_id}",
+                       headers={**self.h, "Prefer": "return=minimal"},
+                       data=json.dumps(body), timeout=30)
+
+    def save_travel(self, ext_id, minutes):
+        self._patch(ext_id, {"travel_min": minutes})
+
+    def save_url(self, ext_id, url):
+        self._patch(ext_id, {"url": url})
 
     def get_work_coords(self):
         try:
-            r = requests.get(f"{self.base}/settings?select=work_lat,work_lng&limit=1",
-                             headers=self.h, timeout=20)
-            if r.status_code >= 300:
-                return None
-            rows = r.json()
+            rows = self._get("settings?select=work_lat,work_lng&limit=1")
             if rows and rows[0].get("work_lat") is not None:
                 return (rows[0]["work_lat"], rows[0]["work_lng"])
         except Exception:
@@ -205,6 +250,22 @@ class Supabase:
 
 
 # ----------------------------- utilitaires -----------------------------
+
+def _dig(data, key):
+    if isinstance(data, dict):
+        if key in data:
+            return data[key]
+        for v in data.values():
+            got = _dig(v, key)
+            if got is not None:
+                return got
+    elif isinstance(data, list):
+        for v in data:
+            got = _dig(v, key)
+            if got is not None:
+                return got
+    return None
+
 
 def _as_list(data, keys):
     if isinstance(data, list):
