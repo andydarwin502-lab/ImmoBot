@@ -44,14 +44,14 @@ def main() -> int:
         return 0
 
     rows = _dedup([map_ad(a) for a in ads])
-    id2alert = {str(a.get("id") or a.get("uuid") or ""): a.get("_alert_id") for a in ads}
+    id2token = {str(a.get("id") or a.get("uuid") or ""): a.get("_alert_token") for a in ads}
     print(f"🧹 {len(rows)} annonce(s) après dédoublonnage.")
 
     sb = Supabase(sb_url, sb_key)
     print(f"🗄️  {sb.upsert_listings(rows)} ligne(s) écrite(s) dans la base.")
 
     enrich_travel(sb)
-    enrich_urls(sb, session, id2alert)
+    enrich_urls(sb, session, id2token)
 
     print("✅ Terminé.")
     return 0
@@ -80,10 +80,12 @@ def fetch_jinka(token: str):
         if rd.status_code >= 400:
             print(f"   ⚠️ alerte {aid} status {rd.status_code}")
             continue
+        atoken = alert.get("token") or aid
         chunk = _as_list(rd.json(), ("ads", "results", "data", "matches", "items"))
         for ad in chunk:
             if isinstance(ad, dict):
                 ad["_alert_id"] = aid
+                ad["_alert_token"] = atoken
         ads.extend(chunk)
         time.sleep(0.25)
     return s, ads
@@ -120,7 +122,7 @@ def map_ad(a: dict) -> dict:
 
 # ----------------------------- Lien direct vers l'annonce -----------------------------
 
-def enrich_urls(sb: "Supabase", session, id2alert: dict) -> None:
+def enrich_urls(sb: "Supabase", session, id2token: dict) -> None:
     todo = sb.get_needing_url()
     if not todo:
         print("🔗 Liens déjà résolus.")
@@ -128,10 +130,10 @@ def enrich_urls(sb: "Supabase", session, id2alert: dict) -> None:
     print(f"🔗 {len(todo)} lien(s) à résoudre…")
     done, diag = 0, True
     for r in todo:
-        aid = id2alert.get(r["ext_id"])
-        if not aid:
+        token = id2token.get(r["ext_id"])
+        if not token:
             continue
-        url = resolve_url(session, aid, r["ext_id"], diag)
+        url = resolve_url(session, token, r["ext_id"], diag)
         diag = False
         if url:
             sb.save_url(r["ext_id"], url)
@@ -140,26 +142,35 @@ def enrich_urls(sb: "Supabase", session, id2alert: dict) -> None:
     print(f"   ✅ {done}/{len(todo)} lien(s) trouvé(s).")
 
 
-def resolve_url(session, alert_id, ad_id, diag=False):
-    """Va chercher l'URL réelle de l'annonce via le détail Jinka."""
-    try:
-        r = session.get(f"{JINKA}/alert/{alert_id}/ad/{ad_id}", timeout=15)
-        if r.status_code >= 400:
+def resolve_url(session, alert_token, ad_id, diag=False):
+    """Récupère l'URL réelle (source) de l'annonce via l'endpoint de vue Jinka."""
+    candidates = [
+        f"{JINKA}/alert_result_view_ad?ad={ad_id}&alert_token={alert_token}",
+        f"{JINKA}/alert_result_view_ad?ad={ad_id}",
+    ]
+    for url in candidates:
+        try:
+            r = session.get(url, timeout=15, allow_redirects=True)
             if diag:
-                print(f"   (diag lien) /ad status {r.status_code} : {r.text[:200]}")
-            return None
-        d = r.json()
-        if diag:
-            print(f"   (diag lien) détail annonce : {json.dumps(d, ensure_ascii=False)[:900]}")
-        for k in ("url", "ad_url", "source_url", "link", "redirect", "redirect_url", "webUrl", "original_url"):
-            v = _dig(d, k)
-            if isinstance(v, str) and v.startswith("http") and "jinka" not in v:
-                return v
-        return None
-    except Exception as e:
-        if diag:
-            print(f"   (diag lien) erreur : {e}")
-        return None
+                print(f"   (diag lien) …{url.split('/apiv2/')[-1][:70]} -> {r.status_code} | final={str(r.url)[:90]} | body={r.text[:180]}")
+            if str(r.url).startswith("http") and "jinka" not in str(r.url):
+                return str(r.url)
+            d = _try_json(r)
+            for k in ("url", "ad_url", "source_url", "link", "redirect", "redirect_url", "webUrl", "original_url"):
+                v = _dig(d, k)
+                if isinstance(v, str) and v.startswith("http") and "jinka" not in v:
+                    return v
+        except Exception as e:
+            if diag:
+                print(f"   (diag lien) erreur : {e}")
+    return None
+
+
+def _try_json(r):
+    try:
+        return r.json()
+    except Exception:
+        return {}
 
 
 # ----------------------------- Temps de trajet -----------------------------

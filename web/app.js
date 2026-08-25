@@ -198,10 +198,14 @@ async function saveSettings() {
       coords = { lat: g.lat, lng: g.lng }; label = g.label;
     }
     if (coords) {
+      const moved = settings.work_lat == null
+        || Math.abs(coords.lat - settings.work_lat) > 0.001
+        || Math.abs(coords.lng - settings.work_lng) > 0.001;
       patch.work_lat = coords.lat; patch.work_lng = coords.lng; patch.work_label = label;
-      // on remet les trajets à zéro pour qu'ils soient recalculés au prochain passage
-      await fetch(`${REST}?id=gt.0`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify({ travel_min: null }) });
-      cache.forEach(x => x.travel_min = null);
+      if (moved) {                                   // seulement si le lieu a vraiment bougé (~100 m)
+        await fetch(`${REST}?id=gt.0`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify({ travel_min: null }) });
+        cache.forEach(x => x.travel_min = null);
+      }
     }
     await fetch(`${SETTINGS}?id=eq.1`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify(patch) });
     Object.assign(settings, patch);
