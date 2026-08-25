@@ -53,9 +53,12 @@ def _generate(session, model: str, prompt: str) -> str:
                 last_err = RuntimeError(f"Groq {r.status_code}")
                 time.sleep(2)
                 continue
-            if r.status_code == 404 or "model_not_found" in r.text or "does not exist" in r.text:
+            low = r.text.lower()
+            if r.status_code in (400, 404) and any(w in low for w in (
+                    "model_not_found", "does not exist", "decommission",
+                    "no longer supported", "not supported", "deprecat")):
                 last_err = RuntimeError(f"modèle '{m}' indispo")
-                continue                                           # modèle inconnu -> suivant
+                continue                                           # modèle inconnu/retiré -> suivant
             if r.status_code >= 400:                               # erreur dure (clé invalide...)
                 raise RuntimeError(f"Groq {r.status_code}: {r.text[:200]}")
             return r.json()["choices"][0]["message"]["content"]
@@ -73,9 +76,34 @@ def _generate(session, model: str, prompt: str) -> str:
     raise last_err or RuntimeError("Groq indisponible")
 
 
+def _choose_model(session, preferred: str) -> str:
+    """Demande à Groq la vraie liste des modèles et choisit un modèle de chat valide."""
+    try:
+        r = session.get("https://api.groq.com/openai/v1/models", timeout=15)
+        models = [x.get("id") for x in (r.json().get("data") or []) if x.get("id")]
+    except Exception:
+        return preferred
+    if not models:
+        return preferred
+    print(f"   ℹ️ Modèles Groq dispo : {models}")
+    chat = [m for m in models if not any(w in m.lower() for w in ("whisper", "tts", "guard", "embed"))]
+    for pref in (preferred, "llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
+        if pref in chat:
+            print(f"   ✅ Modèle IA choisi : {pref}")
+            return pref
+    for m in chat:
+        if "llama" in m.lower():
+            print(f"   ✅ Modèle IA choisi : {m}")
+            return m
+    choice = chat[0] if chat else preferred
+    print(f"   ✅ Modèle IA choisi : {choice}")
+    return choice
+
+
 def score_listings(client, model: str, listings: list, profile: dict) -> list[dict]:
     """Renvoie une liste de résultats alignée, index par index, sur `listings`."""
     results: list = [None] * len(listings)
+    model = _choose_model(client, model)
     for start in range(0, len(listings), BATCH_SIZE):
         batch = listings[start:start + BATCH_SIZE]
         raw = ""
