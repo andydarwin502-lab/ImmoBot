@@ -18,10 +18,44 @@
     <nav class="tabs">
       <button class="tab active" data-filter="all">Toutes</button>
       <button class="tab" data-filter="fav">❤️ Favoris</button>
-      <button class="tab refresh" id="refresh" title="Rafraîchir">↻</button>
+      <button class="tab push-right" id="settings-btn" title="Critères">⚙️</button>
+      <button class="tab" id="refresh" title="Rafraîchir">↻</button>
     </nav>
+    <div class="sortbar">
+      <label>Trier par
+        <select id="sort">
+          <option value="travel">🚗 Trajet</option>
+          <option value="recent">📅 Plus récentes</option>
+          <option value="price">💰 Prix</option>
+          <option value="surface">📐 Surface</option>
+        </select>
+      </label>
+    </div>
   </header>
   <main id="list" class="list"><p class="empty">Chargement…</p></main>
+
+  <div id="settings" class="modal">
+    <div class="sheet">
+      <h2>⚙️ Critères</h2>
+      <label>🧭 Lieu de travail (adresse)
+        <input id="s-work" type="text" placeholder="ex : Chessy 77700, ou une adresse précise">
+      </label>
+      <label>💰 Budget max (€)
+        <input id="s-budget" type="number" inputmode="numeric" placeholder="ex : 900">
+      </label>
+      <label>📐 Surface min (m²)
+        <input id="s-surface" type="number" inputmode="numeric" placeholder="ex : 40">
+      </label>
+      <label>🚗 Trajet max en voiture (min)
+        <input id="s-travel" type="number" inputmode="numeric" placeholder="ex : 25">
+      </label>
+      <p class="hint">Changer le lieu de travail relance le calcul des trajets (au prochain passage du bot).</p>
+      <div class="sheet-actions">
+        <button class="btn ghost" id="s-cancel">Annuler</button>
+        <button class="btn" id="s-save">Enregistrer</button>
+      </div>
+    </div>
+  </div>
 
   <div id="lb" class="lb">
     <button class="lb-close" id="lb-close" aria-label="Fermer">✕</button>

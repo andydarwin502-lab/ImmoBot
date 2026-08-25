@@ -2,16 +2,34 @@
 const SUPABASE_URL = "https://hbugmlasvnolojexywtz.supabase.co";
 const SUPABASE_KEY = "sb_publishable_3tbAXDGGiwCXtx4hmbU4pA_uwMOCIE3";
 const REST = `${SUPABASE_URL}/rest/v1/listings`;
+const SETTINGS = `${SUPABASE_URL}/rest/v1/settings`;
 const HEAD = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" };
 
 let filter = "all";
 let cache = [];
+let settings = {};
 let gal = { imgs: [], i: 0 };
+let sortBy = "travel";
 
+const nlAsc = (x, y) => {                        // tri ascendant, valeurs inconnues à la fin
+  if (x == null && y == null) return 0;
+  if (x == null) return 1;
+  if (y == null) return -1;
+  return x - y;
+};
+const SORTERS = {
+  travel:  (a, b) => nlAsc(a.travel_min, b.travel_min),
+  recent:  (a, b) => String(b.first_seen || "").localeCompare(String(a.first_seen || "")),
+  price:   (a, b) => nlAsc(a.rent, b.rent),
+  surface: (a, b) => (b.area || 0) - (a.area || 0),
+};
+
+// ------- Chargement -------
 async function load() {
   const list = document.getElementById("list");
   list.innerHTML = '<p class="empty">Chargement…</p>';
   try {
+    await loadSettings();
     const res = await fetch(`${REST}?select=*&order=first_seen.desc&limit=300`, { headers: HEAD });
     if (!res.ok) throw new Error(res.status + " " + (await res.text()).slice(0, 120));
     cache = await res.json();
@@ -21,24 +39,39 @@ async function load() {
   }
 }
 
+async function loadSettings() {
+  try {
+    const r = await fetch(`${SETTINGS}?select=*&limit=1`, { headers: HEAD });
+    const rows = await r.json();
+    settings = rows[0] || {};
+  } catch (e) { settings = {}; }
+  fillForm();
+}
+
+// ------- Rendu -------
 function render() {
   const list = document.getElementById("list");
   let items = cache.slice();
-  items.sort((a, b) => {                       // trajet le plus court d'abord (inconnus à la fin)
-    const ta = a.travel_min, tb = b.travel_min;
-    if (ta == null && tb == null) return 0;
-    if (ta == null) return 1;
-    if (tb == null) return -1;
-    return ta - tb;
-  });
+  items.sort(SORTERS[sortBy] || SORTERS.travel);
+  items = applyFilters(items);
   if (filter === "fav") items = items.filter(a => a.status === "favori");
   if (!items.length) {
-    list.innerHTML = `<p class="empty">${filter === "fav" ? "Aucun favori pour l'instant ❤️" : "Aucune annonce pour l'instant."}</p>`;
+    list.innerHTML = `<p class="empty">${filter === "fav" ? "Aucun favori pour l'instant ❤️" : "Aucune annonce ne correspond."}</p>`;
     return;
   }
   list.innerHTML = items.map(card).join("");
   list.querySelectorAll("[data-fav]").forEach(b => b.onclick = (e) => { e.stopPropagation(); toggleFav(b.dataset.fav, b); });
   list.querySelectorAll("[data-gallery]").forEach(p => p.onclick = () => openGallery(p.dataset.gallery));
+}
+
+function applyFilters(items) {
+  const s = settings;
+  return items.filter(a => {
+    if (s.budget_max && a.rent && a.rent > s.budget_max) return false;
+    if (s.surface_min && a.area && a.area < s.surface_min) return false;
+    if (s.max_travel_min && a.travel_min != null && a.travel_min > s.max_travel_min) return false;
+    return true;
+  });
 }
 
 function card(a) {
@@ -97,23 +130,83 @@ function showGal() {
 function navGal(d) { if (gal.imgs.length) { gal.i = (gal.i + d + gal.imgs.length) % gal.imgs.length; showGal(); } }
 function closeGal() { document.getElementById("lb").classList.remove("on"); }
 
+// ------- Critères (réglages) -------
+function openSettings() { fillForm(); document.getElementById("settings").classList.add("on"); }
+function closeSettings() { document.getElementById("settings").classList.remove("on"); }
+
+function fillForm() {
+  setVal("s-work", settings.work_label || "");
+  setVal("s-budget", settings.budget_max || "");
+  setVal("s-surface", settings.surface_min || "");
+  setVal("s-travel", settings.max_travel_min || "");
+}
+
+async function saveSettings() {
+  const btn = document.getElementById("s-save");
+  btn.disabled = true; btn.textContent = "…";
+  const addr = getVal("s-work").trim();
+  const patch = {
+    budget_max: numOrNull("s-budget"),
+    surface_min: numOrNull("s-surface"),
+    max_travel_min: numOrNull("s-travel"),
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    if (addr && addr !== (settings.work_label || "")) {
+      const g = await geocode(addr);
+      if (!g) { alert("Adresse introuvable — réessaie (ex : « Chessy 77700 » ou une adresse précise)."); return; }
+      patch.work_lat = g.lat; patch.work_lng = g.lng; patch.work_label = g.label;
+      // on remet les trajets à zéro pour qu'ils soient recalculés au prochain passage du collecteur
+      await fetch(`${REST}?id=gt.0`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify({ travel_min: null }) });
+      cache.forEach(x => x.travel_min = null);
+    }
+    await fetch(`${SETTINGS}?id=eq.1`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify(patch) });
+    Object.assign(settings, patch);
+    closeSettings();
+    render();
+  } catch (e) {
+    alert("Erreur en enregistrant : " + e);
+  } finally {
+    btn.disabled = false; btn.textContent = "Enregistrer";
+  }
+}
+
+async function geocode(q) {
+  try {
+    const r = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=1`);
+    const j = await r.json();
+    const f = (j.features || [])[0];
+    if (!f) return null;
+    const [lng, lat] = f.geometry.coordinates;
+    return { lat, lng, label: f.properties.label };
+  } catch (e) { return null; }
+}
+
+// ------- utilitaires -------
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+function getVal(id) { return document.getElementById(id).value; }
+function setVal(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
+function numOrNull(id) { const v = parseInt(getVal(id), 10); return isNaN(v) ? null : v; }
 
-// ------- UI wiring -------
+// ------- Câblage -------
 document.querySelectorAll(".tab[data-filter]").forEach(t => t.onclick = () => {
-  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll(".tab[data-filter]").forEach(x => x.classList.remove("active"));
   t.classList.add("active");
   filter = t.dataset.filter;
   render();
 });
 document.getElementById("refresh").onclick = load;
+document.getElementById("sort").onchange = (e) => { sortBy = e.target.value; render(); };
+document.getElementById("settings-btn").onclick = openSettings;
+document.getElementById("s-cancel").onclick = closeSettings;
+document.getElementById("s-save").onclick = saveSettings;
+document.getElementById("settings").onclick = (e) => { if (e.target.id === "settings") closeSettings(); };
 document.getElementById("lb-close").onclick = closeGal;
 document.getElementById("lb-prev").onclick = () => navGal(-1);
 document.getElementById("lb-next").onclick = () => navGal(1);
 document.getElementById("lb").onclick = (e) => { if (e.target.id === "lb") closeGal(); };
-// swipe mobile
 let sx = 0;
 const lb = document.getElementById("lb");
 lb.addEventListener("touchstart", e => { sx = e.touches[0].clientX; }, { passive: true });
