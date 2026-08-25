@@ -44,14 +44,12 @@ def main() -> int:
         return 0
 
     rows = _dedup([map_ad(a) for a in ads])
-    id2token = {str(a.get("id") or a.get("uuid") or ""): a.get("_alert_token") for a in ads}
     print(f"🧹 {len(rows)} annonce(s) après dédoublonnage.")
 
     sb = Supabase(sb_url, sb_key)
     print(f"🗄️  {sb.upsert_listings(rows)} ligne(s) écrite(s) dans la base.")
 
     enrich_travel(sb)
-    enrich_urls(sb, session, id2token)
 
     print("✅ Terminé.")
     return 0
@@ -99,10 +97,15 @@ def map_ad(a: dict) -> dict:
         imgs = [i.get("url") if isinstance(i, dict) else i for i in imgs]
     else:
         imgs = []
+    ext = str(a.get("id") or a.get("uuid") or a.get("external_id") or a.get("reference") or "")
+    token = a.get("_alert_token")
+    # Lien "voir l'annonce" : redirige vers la vraie source (Leboncoin/agence…) via Jinka.
+    url = (f"https://api.jinka.fr/alert_result_view_ad?ad={ext}&alert_token={token}"
+           if (ext and token) else None)
     return {
-        "ext_id": str(a.get("id") or a.get("uuid") or a.get("external_id") or a.get("reference") or ""),
+        "ext_id": ext,
         "source": a.get("source"),
-        "url": a.get("url") or a.get("link") or a.get("ad_url"),
+        "url": url,
         "title": a.get("title") or a.get("name") or a.get("type"),
         "rent": _int(a.get("rent") or a.get("price")),
         "area": _int(a.get("area") or a.get("surface")),
