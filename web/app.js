@@ -11,6 +11,8 @@ let settings = {};
 let gal = { imgs: [], i: 0 };
 let sortBy = "travel";
 let map, marker, workPick = null;
+let travelBusy = false;                          // évite deux calculs de trajet en même temps
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const nlAsc = (x, y) => {                        // tri ascendant, valeurs inconnues à la fin
   if (x == null && y == null) return 0;
@@ -35,6 +37,7 @@ async function load() {
     if (!res.ok) throw new Error(res.status + " " + (await res.text()).slice(0, 120));
     cache = await res.json();
     render();
+    computeTravel();                               // complète les temps de trajet manquants
   } catch (e) {
     list.innerHTML = `<p class="empty">Impossible de charger 😕<br><small>${esc(String(e))}</small></p>`;
   }
@@ -47,6 +50,78 @@ async function loadSettings() {
     settings = rows[0] || {};
   } catch (e) { settings = {}; }
   fillForm();
+}
+
+// ------- Temps de trajet (calculé ICI, dans le navigateur = ton IP perso, fiable) -------
+// (Le collecteur tourne sur GitHub Actions dont l'IP est bloquée par le serveur OSRM
+//  gratuit : c'est pourquoi les trajets manquaient. Ici, depuis ton téléphone, ça marche.)
+function workCoords() {
+  return [settings.work_lat || 48.8786, settings.work_lng || 2.7804];
+}
+
+async function osrmMinutes(lat, lng, wlat, wlng) {
+  try {
+    const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${lng},${lat};${wlng},${wlat}?overview=false`);
+    if (!r.ok) return null;
+    const routes = (await r.json()).routes || [];
+    return routes.length ? Math.round(routes[0].duration / 60) : null;
+  } catch (e) { return null; }
+}
+
+// Pas de coordonnées ? On géocode la ville (service adresse.data.gouv.fr, gratuit).
+async function geocodeCity(city, postal) {
+  const q = (city || "").trim() || (postal || "");
+  if (!q) return null;
+  try {
+    let u = `https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=1`;
+    if (postal) u += `&postcode=${encodeURIComponent(postal)}&type=municipality`;
+    const f = (((await (await fetch(u)).json()).features) || [])[0];
+    if (!f) return null;
+    const [lng, lat] = f.geometry.coordinates;
+    return { lat, lng };
+  } catch (e) { return null; }
+}
+
+function patchListing(id, body) {
+  return fetch(`${REST}?id=eq.${id}`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify(body) }).catch(() => {});
+}
+
+// Remplit les trajets manquants. Après un changement de lieu de travail, saveSettings
+// remet tous les travel_min à null → cette fonction les recalcule tous avec le nouveau lieu.
+async function computeTravel() {
+  if (travelBusy) return;
+  travelBusy = true;
+  const tried = new Set();                         // annonces déjà tentées (évite de boucler)
+  try {
+    while (true) {
+      const a = cache.find((x) => x.travel_min == null && !tried.has(x.id));
+      if (!a) break;
+      const done = cache.filter((x) => x.travel_min != null).length;
+      setToast(`🚗 Calcul des trajets… ${done}/${cache.length}`);
+      if (a.lat == null || a.lng == null) {         // pas de coordonnées : géocode la ville
+        const c = await geocodeCity(a.city, a.postal_code);
+        if (!c) { tried.add(a.id); continue; }
+        a.lat = c.lat; a.lng = c.lng;
+        patchListing(a.id, { lat: c.lat, lng: c.lng });
+      }
+      const [wlat, wlng] = workCoords();            // relu à chaque fois (si le lieu change en cours)
+      const m = await osrmMinutes(a.lat, a.lng, wlat, wlng);
+      if (m != null) { a.travel_min = m; patchListing(a.id, { travel_min: m }); render(); }
+      else { tried.add(a.id); }                      // échec réseau : on réessaiera plus tard
+      await sleep(120);
+    }
+  } finally {
+    travelBusy = false;
+    setToast(null);
+    render();
+  }
+}
+
+function setToast(msg) {
+  let t = document.getElementById("toast");
+  if (!msg) { if (t) t.remove(); return; }
+  if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+  t.textContent = msg;
 }
 
 // ------- Rendu -------
@@ -197,12 +272,13 @@ async function saveSettings() {
       if (!g) { alert("Adresse introuvable — réessaie, ou place le point sur la carte."); return; }
       coords = { lat: g.lat, lng: g.lng }; label = g.label;
     }
+    let moved = false;
     if (coords) {
-      const moved = settings.work_lat == null
+      moved = settings.work_lat == null
         || Math.abs(coords.lat - settings.work_lat) > 0.001
         || Math.abs(coords.lng - settings.work_lng) > 0.001;
       patch.work_lat = coords.lat; patch.work_lng = coords.lng; patch.work_label = label;
-      if (moved) {                                   // seulement si le lieu a vraiment bougé (~100 m)
+      if (moved) {                                   // lieu déplacé (~100 m) : on efface les trajets…
         await fetch(`${REST}?id=gt.0`, { method: "PATCH", headers: { ...HEAD, Prefer: "return=minimal" }, body: JSON.stringify({ travel_min: null }) });
         cache.forEach(x => x.travel_min = null);
       }
@@ -212,6 +288,7 @@ async function saveSettings() {
     workPick = null;
     closeSettings();
     render();
+    if (moved) computeTravel();                      // …puis recalcule tout avec le nouveau lieu
   } catch (e) {
     alert("Erreur en enregistrant : " + e);
   } finally {

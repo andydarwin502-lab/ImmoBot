@@ -145,3 +145,12 @@ body {
 #map { height: 220px; border-radius: 12px; margin: 4px 0 6px; overflow: hidden; z-index: 0; }
 .sheet-actions { display: flex; gap: 10px; }
 .btn.ghost { background: #eef2f7; color: var(--ink); }
+
+/* ------- Petit bandeau "calcul en cours" ------- */
+#toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom) + 16px);
+  background: rgba(15,23,42,.92); color: #fff; font-size: 14px; font-weight: 700;
+  padding: 10px 18px; border-radius: 999px; z-index: 120;
+  box-shadow: 0 4px 16px rgba(0,0,0,.3);
+}
